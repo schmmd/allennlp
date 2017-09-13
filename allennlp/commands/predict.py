@@ -39,17 +39,13 @@ def add_subparser(parser: argparse._SubParsersAction) -> argparse.ArgumentParser
                            help='path to input file')
     subparser.add_argument('--output-file', type=argparse.FileType('w'), help='path to output file')
     subparser.add_argument('--silent', action='store_true', help='do not print output to stdout')
-    subparser.add_argument('--cuda_device',
-                           type=int,
-                           default=-1,
-                           help='id of GPU to use (if any)')
 
     subparser.set_defaults(func=predict)
 
     return subparser
 
 def get_predictor(args: argparse.Namespace) -> Predictor:
-    archive = load_archive(args.archive_file, cuda_device=args.cuda_device)
+    archive = load_archive(args.archive_file)
     predictor = Predictor.from_archive(archive)
     return predictor
 
