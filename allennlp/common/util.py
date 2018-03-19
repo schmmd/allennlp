@@ -167,9 +167,9 @@ def prepare_environment(params: Params):
     params: Params object or dict, required.
         A ``Params`` object or dict holding the json parameters.
     """
-    seed = params.pop_int("random_seed", 13370)
-    numpy_seed = params.pop_int("numpy_seed", 1337)
-    torch_seed = params.pop_int("pytorch_seed", 133)
+    seed = params.pop_int("random_seed", 1)
+    numpy_seed = params.pop_int("numpy_seed", 1)
+    torch_seed = params.pop_int("pytorch_seed", 1)
 
     if seed is not None:
         random.seed(seed)
