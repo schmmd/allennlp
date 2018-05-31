@@ -102,6 +102,7 @@ def load_archive(archive_file: str,
     overrides: ``str``, optional (default = "")
         HOCON overrides to apply to the unarchived ``Params`` object.
     """
+    logger.info(f"Loading archive file {archive_file}")
     # redirect to the cache, if necessary
     archive_file = cached_path(archive_file)
 
