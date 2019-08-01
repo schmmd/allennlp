@@ -1,6 +1,10 @@
 allennlp.data.tokenizers
 ================================
 
+.. automodule:: allennlp.data.tokenizers.token
+   :members:
+   :undoc-members:
+   :show-inheritance:
 
 .. automodule:: allennlp.data.tokenizers
    :members:
@@ -50,3 +54,8 @@ allennlp.data.tokenizers
    :undoc-members:
    :show-inheritance:
 
+.. _sentence-splitter:
+.. automodule:: allennlp.data.tokenizers.sentence_splitter
+   :members:
+   :undoc-members:
+   :show-inheritance:

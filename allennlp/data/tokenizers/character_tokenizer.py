@@ -1,8 +1,8 @@
-from typing import List, Tuple
+from typing import List
 
 from overrides import overrides
 
-from allennlp.common import Params
+from allennlp.data.tokenizers.token import Token
 from allennlp.data.tokenizers.tokenizer import Tokenizer
 
 
@@ -37,6 +37,7 @@ class CharacterTokenizer(Tokenizer):
                  lowercase_characters: bool = False,
                  start_tokens: List[str] = None,
                  end_tokens: List[str] = None) -> None:
+        # TODO(brendanr): Add length truncation.
         self._byte_encoding = byte_encoding
         self._lowercase_characters = lowercase_characters
         self._start_tokens = start_tokens or []
@@ -46,29 +47,34 @@ class CharacterTokenizer(Tokenizer):
         self._end_tokens = end_tokens or []
 
     @overrides
-    def tokenize(self, text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
+    def batch_tokenize(self, texts: List[str]) -> List[List[Token]]:
+        return [self.tokenize(text) for text in texts]
+
+    @overrides
+    def tokenize(self, text: str) -> List[Token]:
         if self._lowercase_characters:
             text = text.lower()
         if self._byte_encoding is not None:
             # We add 1 here so that we can still use 0 for masking, no matter what bytes we get out
             # of this.
-            tokens = [c + 1 for c in text.encode(self._byte_encoding)]
+            tokens = [Token(text_id=c + 1) for c in text.encode(self._byte_encoding)]
         else:
-            tokens = list(text)  # type: ignore
+            tokens = [Token(t) for t in list(text)]
         for start_token in self._start_tokens:
-            tokens.insert(0, start_token)  # type: ignore
+            if isinstance(start_token, int):
+                token = Token(text_id=start_token, idx=0)
+            else:
+                token = Token(text=start_token, idx=0)
+            tokens.insert(0, token)
         for end_token in self._end_tokens:
-            tokens.append(end_token)  # type: ignore
-        return tokens, None  # type: ignore
+            if isinstance(end_token, int):
+                token = Token(text_id=end_token, idx=0)
+            else:
+                token = Token(text=end_token, idx=0)
+            tokens.append(token)
+        return tokens
 
-    @classmethod
-    def from_params(cls, params: Params) -> 'CharacterTokenizer':
-        byte_encoding = params.pop('byte_encoding', None)
-        lowercase_characters = params.pop('lowercase_characters', False)
-        start_tokens = params.pop('start_tokens', None)
-        end_tokens = params.pop('end_tokens', None)
-        params.assert_empty(cls.__name__)
-        return cls(byte_encoding=byte_encoding,
-                   lowercase_characters=lowercase_characters,
-                   start_tokens=start_tokens,
-                   end_tokens=end_tokens)
+    def __eq__(self, other) -> bool:
+        if isinstance(self, other.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented

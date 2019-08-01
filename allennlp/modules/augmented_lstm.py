@@ -6,7 +6,7 @@ connections between layers.
 from typing import Optional, Tuple
 
 import torch
-from torch.autograd import Variable
+
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence, PackedSequence
 
 from allennlp.common.checks import ConfigurationError
@@ -35,13 +35,18 @@ class AugmentedLstm(torch.nn.Module):
         `A Theoretically Grounded Application of Dropout in Recurrent Neural Networks
         <https://arxiv.org/abs/1512.05287>`_ . Implementation wise, this simply
         applies a fixed dropout mask per sequence to the recurrent connection of the
-        LSTM.
+        LSTM. Dropout is not applied to the output sequence nor the last hidden
+        state that is returned, it is only applied to all previous hidden states.
     use_highway: bool, optional (default = True)
         Whether or not to use highway connections between layers. This effectively involves
         reparameterising the normal output of an LSTM as::
 
             gate = sigmoid(W_x1 * x_t + W_h * h_t)
             output = gate * h_t  + (1 - gate) * (W_x2 * x_t)
+    use_input_projection_bias : bool, optional (default = True)
+        Whether or not to use a bias on the input projection layer. This is mainly here
+        for backwards compatibility reasons and will be removed (and set to False)
+        in future releases.
 
     Returns
     -------
@@ -56,7 +61,8 @@ class AugmentedLstm(torch.nn.Module):
                  hidden_size: int,
                  go_forward: bool = True,
                  recurrent_dropout_probability: float = 0.0,
-                 use_highway: bool = True) -> None:
+                 use_highway: bool = True,
+                 use_input_projection_bias: bool = True) -> None:
         super(AugmentedLstm, self).__init__()
         # Required to be wrapped with a :class:`PytorchSeq2SeqWrapper`.
         self.input_size = input_size
@@ -70,10 +76,10 @@ class AugmentedLstm(torch.nn.Module):
         # using highway layers, we need some extra projections, which is
         # why the sizes of the Linear layers change here depending on this flag.
         if use_highway:
-            self.input_linearity = torch.nn.Linear(input_size, 6 * hidden_size, bias=True)
+            self.input_linearity = torch.nn.Linear(input_size, 6 * hidden_size, bias=use_input_projection_bias)
             self.state_linearity = torch.nn.Linear(hidden_size, 5 * hidden_size, bias=True)
         else:
-            self.input_linearity = torch.nn.Linear(input_size, 4 * hidden_size, bias=True)
+            self.input_linearity = torch.nn.Linear(input_size, 4 * hidden_size, bias=use_input_projection_bias)
             self.state_linearity = torch.nn.Linear(hidden_size, 4 * hidden_size, bias=True)
         self.reset_parameters()
 
@@ -82,11 +88,9 @@ class AugmentedLstm(torch.nn.Module):
         block_orthogonal(self.input_linearity.weight.data, [self.hidden_size, self.input_size])
         block_orthogonal(self.state_linearity.weight.data, [self.hidden_size, self.hidden_size])
 
-        self.input_linearity.bias.data.fill_(0.0)
         self.state_linearity.bias.data.fill_(0.0)
         # Initialize forget gate biases to 1.0 as per An Empirical
         # Exploration of Recurrent Network Architectures, (Jozefowicz, 2015).
-        self.input_linearity.bias.data[self.hidden_size:2 * self.hidden_size].fill_(1.0)
         self.state_linearity.bias.data[self.hidden_size:2 * self.hidden_size].fill_(1.0)
 
     def forward(self,  # pylint: disable=arguments-differ
@@ -118,15 +122,10 @@ class AugmentedLstm(torch.nn.Module):
         batch_size = sequence_tensor.size()[0]
         total_timesteps = sequence_tensor.size()[1]
 
-        # We have to use this '.data.new().resize_.fill_' pattern to create tensors with the correct
-        # type - forward has no knowledge of whether these are torch.Tensors or torch.cuda.Tensors.
-        output_accumulator = Variable(sequence_tensor.data.new()
-                                      .resize_(batch_size, total_timesteps, self.hidden_size).fill_(0))
+        output_accumulator = sequence_tensor.new_zeros(batch_size, total_timesteps, self.hidden_size)
         if initial_state is None:
-            full_batch_previous_memory = Variable(sequence_tensor.data.new()
-                                                  .resize_(batch_size, self.hidden_size).fill_(0))
-            full_batch_previous_state = Variable(sequence_tensor.data.new()
-                                                 .resize_(batch_size, self.hidden_size).fill_(0))
+            full_batch_previous_memory = sequence_tensor.new_zeros(batch_size, self.hidden_size)
+            full_batch_previous_state = sequence_tensor.new_zeros(batch_size, self.hidden_size)
         else:
             full_batch_previous_state = initial_state[0].squeeze(0)
             full_batch_previous_memory = initial_state[1].squeeze(0)
@@ -165,6 +164,9 @@ class AugmentedLstm(torch.nn.Module):
             # Actually get the slices of the batch which we need for the computation at this timestep.
             previous_memory = full_batch_previous_memory[0: current_length_index + 1].clone()
             previous_state = full_batch_previous_state[0: current_length_index + 1].clone()
+            # Only do recurrent dropout if the dropout prob is > 0.0 and we are in training mode.
+            if dropout_mask is not None and self.training:
+                previous_state = previous_state * dropout_mask[0: current_length_index + 1]
             timestep_input = sequence_tensor[0: current_length_index + 1, index]
 
             # Do the projections for all the gates all at once.
@@ -190,15 +192,11 @@ class AugmentedLstm(torch.nn.Module):
                 highway_input_projection = projected_input[:, 5 * self.hidden_size:6 * self.hidden_size]
                 timestep_output = highway_gate * timestep_output + (1 - highway_gate) * highway_input_projection
 
-            # Only do dropout if the dropout prob is > 0.0 and we are in training mode.
-            if dropout_mask is not None and self.training:
-                timestep_output = timestep_output * dropout_mask[0: current_length_index + 1]
-
             # We've been doing computation with less than the full batch, so here we create a new
             # variable for the the whole batch at this timestep and insert the result for the
             # relevant elements of the batch into it.
-            full_batch_previous_memory = Variable(full_batch_previous_memory.data.clone())
-            full_batch_previous_state = Variable(full_batch_previous_state.data.clone())
+            full_batch_previous_memory = full_batch_previous_memory.clone()
+            full_batch_previous_state = full_batch_previous_state.clone()
             full_batch_previous_memory[0:current_length_index + 1] = memory
             full_batch_previous_state[0:current_length_index + 1] = timestep_output
             output_accumulator[0:current_length_index + 1, index] = timestep_output

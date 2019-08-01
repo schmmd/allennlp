@@ -1,9 +1,7 @@
 import torch
-from torch.nn.utils.rnn import pack_padded_sequence
 
 from allennlp.common.checks import ConfigurationError
 from allennlp.modules.seq2vec_encoders.seq2vec_encoder import Seq2VecEncoder
-from allennlp.nn.util import sort_batch_by_length, get_lengths_from_binary_sequence_mask
 
 
 class PytorchSeq2VecWrapper(Seq2VecEncoder):
@@ -26,8 +24,8 @@ class PytorchSeq2VecWrapper(Seq2VecEncoder):
 
         - ``self.input_size: int``
         - ``self.hidden_size: int``
-        - ``def forward(inputs: PackedSequence, hidden_state: torch.autograd.Variable) ->
-          Tuple[PackedSequence, torch.autograd.Variable]``.
+        - ``def forward(inputs: PackedSequence, hidden_state: torch.tensor) ->
+          Tuple[PackedSequence, torch.Tensor]``.
         - ``self.bidirectional: bool`` (optional)
 
     This is what pytorch's RNN's look like - just make sure your class looks like those, and it
@@ -38,7 +36,8 @@ class PytorchSeq2VecWrapper(Seq2VecEncoder):
     second parameter.
     """
     def __init__(self, module: torch.nn.modules.RNNBase) -> None:
-        super(PytorchSeq2VecWrapper, self).__init__()
+        # Seq2VecEncoders cannot be stateful.
+        super(PytorchSeq2VecWrapper, self).__init__(stateful=False)
         self._module = module
         try:
             if not self._module.batch_first:
@@ -67,19 +66,26 @@ class PytorchSeq2VecWrapper(Seq2VecEncoder):
             # variable length sequences, as the last state for each element of the batch won't be
             # at the end of the max sequence length, so we have to use the state of the RNN below.
             return self._module(inputs, hidden_state)[0][:, -1, :]
-        sequence_lengths = get_lengths_from_binary_sequence_mask(mask)
-        sorted_inputs, sorted_sequence_lengths, restoration_indices = sort_batch_by_length(inputs,
-                                                                                           sequence_lengths)
-        packed_sequence_input = pack_padded_sequence(sorted_inputs,
-                                                     sorted_sequence_lengths.data.tolist(),
-                                                     batch_first=True)
 
-        # Actually call the module on the sorted PackedSequence.
-        _, state = self._module(packed_sequence_input, hidden_state)
+        batch_size = mask.size(0)
+
+        _, state, restoration_indices, = \
+            self.sort_and_run_forward(self._module, inputs, mask, hidden_state)
 
         # Deal with the fact the LSTM state is a tuple of (state, memory).
         if isinstance(state, tuple):
             state = state[0]
+
+        num_layers_times_directions, num_valid, encoding_dim = state.size()
+        # Add back invalid rows.
+        if num_valid < batch_size:
+            # batch size is the second dimension here, because pytorch
+            # returns RNN state as a tensor of shape (num_layers * num_directions,
+            # batch_size, hidden_size)
+            zeros = state.new_zeros(num_layers_times_directions,
+                                    batch_size - num_valid,
+                                    encoding_dim)
+            state = torch.cat([state, zeros], 1)
 
         # Restore the original indices and return the final state of the
         # top layer. Pytorch's recurrent layers return state in the form

@@ -4,7 +4,6 @@ from overrides import overrides
 import torch
 from torch.nn import Conv1d, Linear
 
-from allennlp.common import Params
 from allennlp.modules.seq2vec_encoders.seq2vec_encoder import Seq2VecEncoder
 from allennlp.nn import Activation
 
@@ -52,13 +51,13 @@ class CnnEncoder(Seq2VecEncoder):
                  embedding_dim: int,
                  num_filters: int,
                  ngram_filter_sizes: Tuple[int, ...] = (2, 3, 4, 5),  # pylint: disable=bad-whitespace
-                 conv_layer_activation: Activation = Activation.by_name('relu')(),
+                 conv_layer_activation: Activation = None,
                  output_dim: Optional[int] = None) -> None:
         super(CnnEncoder, self).__init__()
         self._embedding_dim = embedding_dim
         self._num_filters = num_filters
         self._ngram_filter_sizes = ngram_filter_sizes
-        self._activation = conv_layer_activation
+        self._activation = conv_layer_activation or Activation.by_name('relu')()
         self._output_dim = output_dim
 
         self._convolution_layers = [Conv1d(in_channels=self._embedding_dim,
@@ -99,8 +98,12 @@ class CnnEncoder(Seq2VecEncoder):
         # `(batch_size, num_conv_layers * num_filters)`, which then gets projected using the
         # projection layer, if requested.
 
-        filter_outputs = [self._activation(convolution_layer(tokens)).max(dim=2)[0]
-                          for convolution_layer in self._convolution_layers]
+        filter_outputs = []
+        for i in range(len(self._convolution_layers)):
+            convolution_layer = getattr(self, 'conv_layer_{}'.format(i))
+            filter_outputs.append(
+                    self._activation(convolution_layer(tokens)).max(dim=2)[0]
+            )
 
         # Now we have a list of `num_conv_layers` tensors of shape `(batch_size, num_filters)`.
         # Concatenating them gives us a tensor of shape `(batch_size, num_filters * num_conv_layers)`.
@@ -111,17 +114,3 @@ class CnnEncoder(Seq2VecEncoder):
         else:
             result = maxpool_output
         return result
-
-    @classmethod
-    def from_params(cls, params: Params) -> 'CnnEncoder':
-        embedding_dim = params.pop('embedding_dim')
-        output_dim = params.pop('output_dim', None)
-        num_filters = params.pop('num_filters')
-        conv_layer_activation = Activation.by_name(params.pop("conv_layer_activation", "relu"))()
-        ngram_filter_sizes = tuple(params.pop('ngram_filter_sizes', [2, 3, 4, 5]))
-        params.assert_empty(cls.__name__)
-        return cls(embedding_dim=embedding_dim,
-                   num_filters=num_filters,
-                   ngram_filter_sizes=ngram_filter_sizes,
-                   conv_layer_activation=conv_layer_activation,
-                   output_dim=output_dim)

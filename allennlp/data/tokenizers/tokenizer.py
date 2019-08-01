@@ -1,6 +1,7 @@
-from typing import List, Tuple
+from typing import List
 
-from allennlp.common import Params, Registrable
+from allennlp.common import Registrable
+from allennlp.data.tokenizers.token import Token
 
 
 class Tokenizer(Registrable):
@@ -22,21 +23,19 @@ class Tokenizer(Registrable):
     """
     default_implementation = 'word'
 
-    def tokenize(self, text: str) -> Tuple[List[str], List[Tuple[int, int]]]:
+    def batch_tokenize(self, texts: List[str]) -> List[List[Token]]:
         """
-        The only public method for this class.  Actually implements splitting words into tokens.
-
-        Returns
-        -------
-        tokens : ``List[str]``
-        offsets : ``List[Tuple[int, int]]``
-            A list of the same lengths as ``tokens``, giving character offsets into the original
-            string for each token.  Not all tokenizers implement this, so this value could be
-            ``None``.
+        Batches together tokenization of several texts, in case that is faster for particular
+        tokenizers.
         """
         raise NotImplementedError
 
-    @classmethod
-    def from_params(cls, params: Params) -> 'Tokenizer':
-        choice = params.pop_choice('type', cls.list_available(), default_to_first_choice=True)
-        return cls.by_name(choice).from_params(params)
+    def tokenize(self, text: str) -> List[Token]:
+        """
+        Actually implements splitting words into tokens.
+
+        Returns
+        -------
+        tokens : ``List[Token]``
+        """
+        raise NotImplementedError

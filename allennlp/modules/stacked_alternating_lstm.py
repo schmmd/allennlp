@@ -3,7 +3,7 @@ A stacked LSTM with LSTM layers which alternate between going forwards over
 the sequence and going backwards.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import torch
 from torch.nn.utils.rnn import PackedSequence
 from allennlp.modules.augmented_lstm import AugmentedLstm
@@ -29,6 +29,10 @@ class StackedAlternatingLstm(torch.nn.Module):
         The dropout probability to be used in a dropout scheme as stated in
         `A Theoretically Grounded Application of Dropout in Recurrent Neural Networks
         <https://arxiv.org/abs/1512.05287>`_ .
+    use_input_projection_bias : bool, optional (default = True)
+        Whether or not to use a bias on the input projection layer. This is mainly here
+        for backwards compatibility reasons and will be removed (and set to False)
+        in future releases.
 
     Returns
     -------
@@ -43,12 +47,14 @@ class StackedAlternatingLstm(torch.nn.Module):
                  hidden_size: int,
                  num_layers: int,
                  recurrent_dropout_probability: float = 0.0,
-                 use_highway: bool = True) -> None:
+                 use_highway: bool = True,
+                 use_input_projection_bias: bool = True) -> None:
         super(StackedAlternatingLstm, self).__init__()
 
         # Required to be wrapped with a :class:`PytorchSeq2SeqWrapper`.
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
 
         layers = []
         lstm_input_size = input_size
@@ -56,7 +62,8 @@ class StackedAlternatingLstm(torch.nn.Module):
             go_forward = True if layer_index % 2 == 0 else False
             layer = AugmentedLstm(lstm_input_size, hidden_size, go_forward,
                                   recurrent_dropout_probability=recurrent_dropout_probability,
-                                  use_highway=use_highway)
+                                  use_highway=use_highway,
+                                  use_input_projection_bias=use_input_projection_bias)
             lstm_input_size = hidden_size
             self.add_module('layer_{}'.format(layer_index), layer)
             layers.append(layer)
@@ -64,7 +71,8 @@ class StackedAlternatingLstm(torch.nn.Module):
 
     def forward(self,  # pylint: disable=arguments-differ
                 inputs: PackedSequence,
-                initial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None):
+                initial_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> \
+            Tuple[Union[torch.Tensor, PackedSequence], Tuple[torch.Tensor, torch.Tensor]]:
         """
         Parameters
         ----------
@@ -78,7 +86,7 @@ class StackedAlternatingLstm(torch.nn.Module):
         -------
         output_sequence : PackedSequence
             The encoded sequence of shape (batch_size, sequence_length, hidden_size)
-        final_states: torch.Tensor
+        final_states: Tuple[torch.Tensor, torch.Tensor]
             The per-layer final (state, memory) states of the LSTM, each with shape
             (num_layers, batch_size, hidden_size).
         """
@@ -93,10 +101,11 @@ class StackedAlternatingLstm(torch.nn.Module):
 
         output_sequence = inputs
         final_states = []
-        for layer, state in zip(self.lstm_layers, hidden_states):
+        for i, state in enumerate(hidden_states):
+            layer = getattr(self, 'layer_{}'.format(i))
             # The state is duplicated to mirror the Pytorch API for LSTMs.
             output_sequence, final_state = layer(output_sequence, state)
             final_states.append(final_state)
 
-        final_state_tuple = (torch.cat(state_list, 0) for state_list in zip(*final_states))
-        return output_sequence, final_state_tuple
+        final_hidden_state, final_cell_state = tuple(torch.cat(state_list, 0) for state_list in zip(*final_states))
+        return output_sequence, (final_hidden_state, final_cell_state)
